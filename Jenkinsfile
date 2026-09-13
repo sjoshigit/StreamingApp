@@ -3,6 +3,7 @@ pipeline {
 
     environment {
         AWS_REGION     = 'ap-south-1'
+        // Dynamically get the AWS Account ID from the attached EC2 IAM Role
         AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
         ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE_TAG      = "1.0.${BUILD_NUMBER}"
@@ -17,14 +18,13 @@ pipeline {
 
         stage('Provision ECR Repositories') {
             steps {
+                // POSIX-compliant loop compatible with dash (/bin/sh)
                 sh '''
-                REPOS=("streaming-auth" "streaming-stream" "streaming-admin" "streaming-chat" "streaming-frontend")
-                
-                for repo in "${REPOS[@]}"; do
+                for repo in streaming-auth streaming-stream streaming-admin streaming-chat streaming-frontend; do
                   if aws ecr describe-repositories --repository-names "$repo" --region "${AWS_REGION}" >/dev/null 2>&1; then
-                    echo "ECR repository '$repo' already exists. Skipping creation."
+                    echo "ECR repository '$repo' already exists in ${AWS_REGION}. Skipping creation."
                   else
-                    echo "Creating ECR repository '$repo'..."
+                    echo "Creating ECR repository '$repo' in ${AWS_REGION}..."
                     aws ecr create-repository \
                       --repository-name "$repo" \
                       --region "${AWS_REGION}" \
@@ -37,6 +37,7 @@ pipeline {
 
         stage('Authenticate to ECR') {
             steps {
+                // Fetch authorization token and authenticate Docker with ECR in ap-south-1
                 sh 'aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}'
             }
         }
@@ -75,28 +76,18 @@ pipeline {
                 }
             }
         }
-
-        stage('Deploy via Helm to EKS') {
-            steps {
-                sh """
-                aws eks update-kubeconfig --region ${AWS_REGION} --name streaming-cluster
-                helm upgrade --install streamingapp ./streamingapp \
-                  --set services.auth.tag=${IMAGE_TAG} \
-                  --set services.streaming.tag=${IMAGE_TAG} \
-                  --set services.admin.tag=${IMAGE_TAG} \
-                  --set services.chat.tag=${IMAGE_TAG} \
-                  --set services.frontend.tag=${IMAGE_TAG}
-                """
-            }
-        }
     }
 
     post {
         always {
+            // Prune local build layers on the EC2 build controller
             sh "docker image prune -f || true"
         }
         success {
-            echo "Pipeline finished: All repositories ensured, images pushed, and Helm chart updated."
+            echo "Build successful! All 5 images published to ECR (${AWS_REGION}) with tag: ${IMAGE_TAG}"
+        }
+        failure {
+            echo "Pipeline run failed. Inspect console logs for details."
         }
     }
 }
