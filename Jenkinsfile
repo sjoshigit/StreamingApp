@@ -4,6 +4,9 @@ pipeline {
     environment {
         AWS_REGION = 'ap-south-1'
         IMAGE_TAG  = "1.0.${BUILD_NUMBER}"
+        // Dynamically get the AWS Account ID from the attached EC2 IAM Role
+        AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
+        ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
     }
 
     stages {
