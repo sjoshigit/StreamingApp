@@ -3,8 +3,8 @@ pipeline {
 
     environment {
         AWS_REGION     = 'ap-south-1'
-        CLUSTER_NAME   = 'streaming-cluster'
         IMAGE_TAG      = "1.0.${BUILD_NUMBER}"
+        // Dynamically get the AWS Account ID from the attached EC2 IAM Role
         AWS_ACCOUNT_ID = sh(script: 'aws sts get-caller-identity --query Account --output text', returnStdout: true).trim()
         ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
     }
@@ -35,7 +35,6 @@ pipeline {
                     env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
 
                     echo "AWS Region   : ${env.AWS_REGION}"
-                    echo "Cluster Name : ${env.CLUSTER_NAME}"
                     echo "AWS Account  : ${env.AWS_ACCOUNT_ID}"
                     echo "ECR Registry : ${env.ECR_REGISTRY}"
                     echo "Image Tag    : ${env.IMAGE_TAG}"
@@ -44,7 +43,7 @@ pipeline {
         }
 
         // ------------------------------------------------------------
-        // 3. Verify AWS, Docker, and Kubernetes tools
+        // 3. Verify AWS and Docker environment
         // ------------------------------------------------------------
         stage('Verify Environment') {
             steps {
@@ -53,14 +52,12 @@ pipeline {
                     aws --version
                     aws sts get-caller-identity
                     docker --version
-                    kubectl version --client
-                    helm version
                 '''
             }
         }
 
         // ------------------------------------------------------------
-        // 4. Create ECR repositories if missing
+        // 4. Create ECR repositories if they don't already exist
         // ------------------------------------------------------------
         stage('Provision ECR Repositories') {
             steps {
@@ -108,57 +105,73 @@ pipeline {
         }
 
         // ------------------------------------------------------------
-        // 6. Build and push all five services in parallel
+        // 6. Build and push all five services
         // ------------------------------------------------------------
         stage('Build & Push Images to ECR') {
             parallel {
 
+                // Auth Service
                 stage('Auth Service') {
                     steps {
                         sh '''
                             set -eux
-                            docker build -t "${ECR_REGISTRY}/streaming-auth:${IMAGE_TAG}" backend/authService
+                            docker build \
+                                -t "${ECR_REGISTRY}/streaming-auth:${IMAGE_TAG}" \
+                                backend/authService
                             docker push "${ECR_REGISTRY}/streaming-auth:${IMAGE_TAG}"
                         '''
                     }
                 }
 
+                // Streaming Service
                 stage('Streaming Service') {
                     steps {
                         sh '''
                             set -eux
-                            docker build -t "${ECR_REGISTRY}/streaming-stream:${IMAGE_TAG}" -f backend/streamingService/Dockerfile backend
+                            docker build \
+                                -t "${ECR_REGISTRY}/streaming-stream:${IMAGE_TAG}" \
+                                -f backend/streamingService/Dockerfile \
+                                backend
                             docker push "${ECR_REGISTRY}/streaming-stream:${IMAGE_TAG}"
                         '''
                     }
                 }
 
+                // Admin Service
                 stage('Admin Service') {
                     steps {
                         sh '''
                             set -eux
-                            docker build -t "${ECR_REGISTRY}/streaming-admin:${IMAGE_TAG}" -f backend/adminService/Dockerfile backend
+                            docker build \
+                                -t "${ECR_REGISTRY}/streaming-admin:${IMAGE_TAG}" \
+                                -f backend/adminService/Dockerfile \
+                                backend
                             docker push "${ECR_REGISTRY}/streaming-admin:${IMAGE_TAG}"
                         '''
                     }
                 }
 
+                // Chat Service
                 stage('Chat Service') {
                     steps {
                         sh '''
                             set -eux
-                            docker build -t "${ECR_REGISTRY}/streaming-chat:${IMAGE_TAG}" -f backend/chatService/Dockerfile backend
+                            docker build \
+                                -t "${ECR_REGISTRY}/streaming-chat:${IMAGE_TAG}" \
+                                -f backend/chatService/Dockerfile \
+                                backend
                             docker push "${ECR_REGISTRY}/streaming-chat:${IMAGE_TAG}"
                         '''
                     }
                 }
 
+                // Frontend Service (Injects Ingress paths into the React production build)
                 stage('Frontend') {
                     steps {
                         sh '''
                             set -eux
 
-                            # Generate .env directly on the agent to override gitignored config
+                            # Create .env dynamically for build runtime
                             cat << 'EOF' > frontend/.env
 REACT_APP_AUTH_API_URL=/api/auth
 REACT_APP_STREAMING_API_URL=/api/streaming
@@ -168,7 +181,7 @@ REACT_APP_CHAT_API_URL=/api/chat
 REACT_APP_CHAT_SOCKET_URL=/
 EOF
 
-                            # Build with args matching the Ingress routing rules
+                            # Pass variables via Docker ARG to ensure they bake into static JS
                             docker build \
                                 --build-arg REACT_APP_AUTH_API_URL="/api/auth" \
                                 --build-arg REACT_APP_STREAMING_API_URL="/api/streaming" \
@@ -204,70 +217,11 @@ EOF
                 '''
             }
         }
-
-        // ------------------------------------------------------------
-        // 8. Connect to EKS Cluster
-        // ------------------------------------------------------------
-        stage('Configure EKS Kubeconfig') {
-            steps {
-                sh '''
-                    set -eux
-                    echo "Updating kubeconfig for ${CLUSTER_NAME} in ${AWS_REGION}..."
-                    aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
-                    
-                    echo "Verifying cluster nodes..."
-                    kubectl get nodes
-                '''
-            }
-        }
-
-        // ------------------------------------------------------------
-        // 9. Deploy / Upgrade using Helm Chart
-        // ------------------------------------------------------------
-        stage('Deploy via Helm') {
-            steps {
-                sh '''
-                    set -eux
-                    echo "Deploying StreamingApp via Helm to ${CLUSTER_NAME}..."
-
-                    helm upgrade --install streamingapp ./streamingapp \
-                      --set services.auth.image="${ECR_REGISTRY}/streaming-auth" \
-                      --set services.auth.tag="${IMAGE_TAG}" \
-                      --set services.streaming.image="${ECR_REGISTRY}/streaming-stream" \
-                      --set services.streaming.tag="${IMAGE_TAG}" \
-                      --set services.admin.image="${ECR_REGISTRY}/streaming-admin" \
-                      --set services.admin.tag="${IMAGE_TAG}" \
-                      --set services.chat.image="${ECR_REGISTRY}/streaming-chat" \
-                      --set services.chat.tag="${IMAGE_TAG}" \
-                      --set services.frontend.image="${ECR_REGISTRY}/streaming-frontend" \
-                      --set services.frontend.tag="${IMAGE_TAG}"
-
-                    echo "Helm deployment submitted successfully."
-                '''
-            }
-        }
-
-        // ------------------------------------------------------------
-        // 10. Verify Deployment Rollout Status
-        // ------------------------------------------------------------
-        stage('Verify Rollout') {
-            steps {
-                sh '''
-                    set -eux
-                    echo "Checking rollout status for microservices..."
-                    kubectl rollout status deployment/auth-deployment --timeout=120s
-                    kubectl rollout status deployment/streaming-deployment --timeout=120s
-                    kubectl rollout status deployment/admin-deployment --timeout=120s
-                    kubectl rollout status deployment/chat-deployment --timeout=120s
-                    kubectl rollout status deployment/frontend-deployment --timeout=120s
-
-                    echo "Current pod status:"
-                    kubectl get pods
-                '''
-            }
-        }
     }
 
+    // ------------------------------------------------------------
+    // Post-build actions
+    // ------------------------------------------------------------
     post {
         always {
             echo 'Cleaning unused Docker build layers...'
@@ -279,11 +233,12 @@ EOF
 ============================================================
 PIPELINE SUCCESS
 ============================================================
-All 5 images built with relative Ingress paths and deployed to EKS!
+All 5 StreamingApp images built with relative Ingress paths
+and pushed to Amazon ECR.
 
-Cluster   : ${CLUSTER_NAME} (${AWS_REGION})
-Image Tag : ${IMAGE_TAG}
-ECR       : ${ECR_REGISTRY}
+AWS Region : ${AWS_REGION}
+Tag        : ${IMAGE_TAG}
+Registry   : ${ECR_REGISTRY}
 ============================================================
 """
         }
@@ -293,7 +248,7 @@ ECR       : ${ECR_REGISTRY}
 ============================================================
 PIPELINE FAILED
 ============================================================
-Deployment failed. Check the Jenkins console log for errors.
+One or more builds or pushes failed. Check console output.
 ============================================================
 '''
         }
