@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-deployment
+  labels:
+    app: chat
+spec:
+  replicas: {{ .Values.replicas.chat }}
+  selector:
+    matchLabels:
+      app: chat
+  template:
+    metadata:
+      labels:
+        app: chat
+    spec:
+      containers:
+        - name: chat
+          image: "{{ include "streamingapp.registry" . }}/{{ .Values.ecr.repositoryPrefix }}-chat:{{ .Values.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3004
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: PORT
+              value: "3004"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: streamingapp-secrets
+                  key: MONGO_URI
+            - name: CLIENT_URLS
+              valueFrom:
+                configMapKeyRef:
+                  name: streamingapp-config
+                  key: CLIENT_URLS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: chat
+  ports:
+    - port: 3004
+      targetPort: 3004

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: streaming-deployment
+  labels:
+    app: streaming
+spec:
+  replicas: {{ .Values.replicas.streaming }}
+  selector:
+    matchLabels:
+      app: streaming
+  template:
+    metadata:
+      labels:
+        app: streaming
+    spec:
+      containers:
+        - name: streaming
+          image: "{{ include "streamingapp.registry" . }}/{{ .Values.ecr.repositoryPrefix }}-service:{{ .Values.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3002
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: PORT
+              value: "3002"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: streamingapp-secrets
+                  key: MONGO_URI
+            - name: CLIENT_URLS
+              valueFrom:
+                configMapKeyRef:
+                  name: streamingapp-config
+                  key: CLIENT_URLS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: streaming-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: streaming
+  ports:
+    - port: 3002
+      targetPort: 3002

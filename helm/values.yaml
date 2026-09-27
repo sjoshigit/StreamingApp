@@ -1,0 +1,36 @@
+global:
+  awsRegion: ap-south-1
+  clientUrls: "http://streamingapp.local,http://localhost:3000"
+
+aws:
+  # Evaluated dynamically at runtime via --set aws.accountId=...
+  accountId: ""
+  roleName: "JenkinsDevOpsRole"
+
+serviceAccount:
+  name: jenkins-devops-sa
+
+ecr:
+  repositoryPrefix: "streaming"
+
+tag: "1.0.3"
+
+secrets:
+  # Injected dynamically via CLI or CI secret managers
+  mongoUri: ""
+  jwtSecret: ""
+
+replicas:
+  frontend: 1
+  auth: 1
+  streaming: 1
+  admin: 1
+  chat: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

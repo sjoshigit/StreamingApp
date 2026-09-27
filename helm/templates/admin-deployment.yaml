@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-deployment
+  labels:
+    app: admin
+spec:
+  replicas: {{ .Values.replicas.admin }}
+  selector:
+    matchLabels:
+      app: admin
+  template:
+    metadata:
+      labels:
+        app: admin
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: admin
+          image: "{{ include "streamingapp.registry" . }}/{{ .Values.ecr.repositoryPrefix }}-admin:{{ .Values.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3003
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: PORT
+              value: "3003"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: streamingapp-secrets
+                  key: MONGO_URI
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: streamingapp-config
+                  key: AWS_REGION
+            - name: CLIENT_URLS
+              valueFrom:
+                configMapKeyRef:
+                  name: streamingapp-config
+                  key: CLIENT_URLS
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              valueFrom:
+                configMapKeyRef:
+                  name: streamingapp-config
+                  key: AWS_STS_REGIONAL_ENDPOINTS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: admin
+  ports:
+    - port: 3003
+      targetPort: 3003
